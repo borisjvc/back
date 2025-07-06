@@ -10,8 +10,7 @@ async function sendDiscordNotification(lead) {
     `**Nombre:** ${lead.nombre}`,
     `**Correo:** ${lead.correo}`,
     `**Teléfono:** ${lead.telefono || 'N/D'}`,
-    `**Mensaje:** ${lead.mensaje}`,
-    `**Fecha:** ${lead.fecha_creacion}`
+    `**Mensaje:** ${lead.mensaje}`
   ].join('\n');
 
   try {
