@@ -1,7 +1,10 @@
 const express = require('express');
-const sql = require('mssql');
 const cors = require('cors');
 require('dotenv').config({ path: './config.env' });
+const pool = require('./db');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { sendDiscordNotification } = require('./utils/discord');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -27,109 +30,105 @@ async function connectDB() {
   try {
     await sql.connect(sqlConfig);
     console.log('Conectado a SQL Server');
-    
-    // Crear tabla si no existe
-    await createTable();
   } catch (err) {
     console.error('Error conectando a la base de datos:', err);
   }
 }
 
-// Función para crear la tabla de contactos
-async function createTable() {
+
+// Función para conectar a la nueva base de datos MySQL
+async function testDB() {
   try {
-    const createTableQuery = `
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='contactos' AND xtype='U')
-      CREATE TABLE contactos (
-        id INT IDENTITY(1,1) PRIMARY KEY,
-        nombre NVARCHAR(100) NOT NULL,
-        correo NVARCHAR(100) NOT NULL,
-        telefono NVARCHAR(20),
-        mensaje NVARCHAR(MAX) NOT NULL,
-        fecha_creacion DATETIME DEFAULT GETDATE()
-      )
-    `;
-    
-    await sql.query(createTableQuery);
-    console.log('Tabla contactos creada o ya existente');
+    const connection = await pool.getConnection();
+    await connection.ping();
+    console.log('Conectado a MySQL');
+    connection.release();
   } catch (err) {
-    console.error('Error creando tabla:', err);
+    console.error('Error conectando a MySQL:', err);
+  }
+}
+
+const DEFAULT_ADMIN_EMAIL = 'admin@admin.com';
+const DEFAULT_ADMIN_PASSWORD = 'AdminPassword@UTcancun.mx';
+
+async function ensureAdminUser() {
+  try {
+    const [rows] = await pool.query('SELECT id FROM login WHERE email = ?', [DEFAULT_ADMIN_EMAIL]);
+    if (!rows.length) {
+      const passwordHash = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 10);
+      await pool.query('INSERT INTO login (email, password) VALUES (?, ?)', [DEFAULT_ADMIN_EMAIL, passwordHash]);
+      console.log('Usuario admin creado');
+    } else {
+      console.log('Usuario admin ya existe');
+    }
+  } catch (err) {
+    console.error('Error asegurando admin:', err);
   }
 }
 
 // Endpoint para guardar datos del formulario
-app.post('/postForm', async (req, res) => {
+app.post('/contact', async (req, res) => {
   try {
-    const { nombre, correo, telefono, mensaje } = req.body;
-    
-    // Validación básica
+    const { nombre, correo, telefono, mensaje, recaptchaToken, terms } = req.body;
     if (!nombre || !correo || !mensaje) {
-      return res.status(400).json({
-        success: false,
-        message: 'Los campos nombre, correo y mensaje son obligatorios'
-      });
+      return res.status(400).json({ success: false, message: 'Campos obligatorios faltantes' });
     }
-    
-    // Validación de email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(correo)) {
-      return res.status(400).json({
-        success: false,
-        message: 'El formato del correo electrónico no es válido'
-      });
+      return res.status(400).json({ success: false, message: 'Formato de correo inválido' });
     }
-    
-    // Insertar datos en la base de datos
-    const insertQuery = `
-      INSERT INTO contactos (nombre, correo, telefono, mensaje)
-      VALUES (@nombre, @correo, @telefono, @mensaje)
-    `;
-    
-    const request = new sql.Request();
-    request.input('nombre', sql.NVarChar, nombre);
-    request.input('correo', sql.NVarChar, correo);
-    request.input('telefono', sql.NVarChar, telefono || '');
-    request.input('mensaje', sql.NVarChar, mensaje);
-    
-    await request.query(insertQuery);
-    
-    res.status(201).json({
-      success: true,
-      message: 'Formulario enviado con éxito'
-    });
-    
-  } catch (error) {
-    console.error('Error guardando formulario:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor'
-    });
+    const insertQuery = `INSERT INTO contact (nombre, correo, telefono, mensaje, recaptchaToken, terms) VALUES (?, ?, ?, ?, ?, ?)`;
+    const [result] = await pool.query(insertQuery, [nombre, correo, telefono || '', mensaje, recaptchaToken || '', !!terms]);
+    const lead = { id: result.insertId, nombre, correo, telefono, mensaje, fecha_creacion: new Date() };
+    // Notificación
+    sendDiscordNotification(lead);
+    res.status(201).json({ success: true, message: 'Formulario enviado con éxito' });
+  } catch (err) {
+    console.error('Error guardando formulario:', err);
+    res.status(500).json({ success: false, message: 'Error interno del servidor' });
   }
 });
 
-// Endpoint para obtener todos los contactos
-app.get('/contactos', async (req, res) => {
+// Endpoint de autenticación
+app.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ success: false, message: 'Email y password requeridos' });
+  }
   try {
-    const query = `
-      SELECT id, nombre, correo, telefono, mensaje, fecha_creacion
-      FROM contactos
-      ORDER BY fecha_creacion DESC
-    `;
-    
-    const result = await sql.query(query);
-    
-    res.json({
-      success: true,
-      data: result.recordset,
-      total: result.recordset.length
-    });
-    
-  } catch (error) {
-    console.error('Error obteniendo contactos:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor'
-    });
+    const [rows] = await pool.query('SELECT id, email, password FROM login WHERE email = ?', [email]);
+    if (!rows.length) return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    const user = rows[0];
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    const token = jwt.sign({ userId: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '8h' });
+    res.json({ success: true, token });
+  } catch (err) {
+    console.error('Error login:', err);
+    res.status(500).json({ success: false, message: 'Error interno del servidor' });
+  }
+});
+
+// Middleware simple para verificar JWT
+function auth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.sendStatus(401);
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403);
+    req.user = user;
+    next();
+  });
+}
+
+// Endpoint para obtener leads (protegido)
+app.get('/leads', auth, async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, nombre, correo, telefono, mensaje, fecha_creacion FROM contact ORDER BY fecha_creacion DESC');
+    res.json({ success: true, total: rows.length, data: rows });
+  } catch (err) {
+    console.error('Error obteniendo leads:', err);
+    res.status(500).json({ success: false, message: 'Error interno del servidor' });
   }
 });
 
@@ -138,8 +137,9 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Servidor de formulario de contacto funcionando',
     endpoints: {
-      postForm: 'POST /postForm - Guardar datos del formulario',
-      getContactos: 'GET /contactos - Obtener todos los contactos'
+      login: 'POST /login',
+      contact: 'POST /contact',
+      leads: 'GET /leads (requiere Bearer token)'
     }
   });
 });
@@ -147,7 +147,8 @@ app.get('/', (req, res) => {
 // Iniciar servidor
 app.listen(PORT, async () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
-  await connectDB();
+  await testDB();
+  await ensureAdminUser();
 });
 
 // Manejo de errores no capturados
