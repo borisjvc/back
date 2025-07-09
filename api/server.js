@@ -1,17 +1,17 @@
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config({ path: './config.env' });
-const pool = require('./db');
+require('dotenv').config({ path: '../config.env' });
+const pool = require('../db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { sendDiscordNotification } = require('./utils/discord');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors());
+app.use(cors({ origin: ['https://componentesleads.netlify.app'] }));
 app.use(express.json());
+
 
 // Configuración de SQL Server
 const sqlConfig = {
@@ -25,46 +25,6 @@ const sqlConfig = {
   }
 };
 
-// Función para conectar a la base de datos
-async function connectDB() {
-  try {
-    await sql.connect(sqlConfig);
-    console.log('Conectado a SQL Server');
-  } catch (err) {
-    console.error('Error conectando a la base de datos:', err);
-  }
-}
-
-
-// Función para conectar a la nueva base de datos MySQL
-async function testDB() {
-  try {
-    const connection = await pool.getConnection();
-    await connection.ping();
-    console.log('Conectado a MySQL');
-    connection.release();
-  } catch (err) {
-    console.error('Error conectando a MySQL:', err);
-  }
-}
-
-const DEFAULT_ADMIN_EMAIL = 'admin@admin.com';
-const DEFAULT_ADMIN_PASSWORD = 'AdminPassword@UTcancun.mx';
-
-async function ensureAdminUser() {
-  try {
-    const [rows] = await pool.query('SELECT id FROM login WHERE email = ?', [DEFAULT_ADMIN_EMAIL]);
-    if (!rows.length) {
-      const passwordHash = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 10);
-      await pool.query('INSERT INTO login (email, password) VALUES (?, ?)', [DEFAULT_ADMIN_EMAIL, passwordHash]);
-      console.log('Usuario admin creado');
-    } else {
-      console.log('Usuario admin ya existe');
-    }
-  } catch (err) {
-    console.error('Error asegurando admin:', err);
-  }
-}
 
 // Endpoint para guardar datos del formulario
 app.post('/contact', async (req, res) => {
@@ -132,25 +92,6 @@ app.get('/leads', auth, async (req, res) => {
   }
 });
 
-// Endpoint de prueba
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Servidor de formulario de contacto funcionando',
-    endpoints: {
-      login: 'POST /login',
-      contact: 'POST /contact',
-      leads: 'GET /leads (requiere Bearer token)'
-    }
-  });
-});
-
-// Iniciar servidor
-app.listen(PORT, async () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
-  await testDB();
-  await ensureAdminUser();
-});
-
 // Manejo de errores no capturados
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled Rejection:', err);
@@ -160,3 +101,5 @@ process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
   process.exit(1);
 }); 
+
+module.exports = app;
