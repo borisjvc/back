@@ -14,11 +14,11 @@ RUN npm ci --only=production
 COPY . .
 
 # Exponer el puerto
-EXPOSE 3001
+EXPOSE 3000
 
 # Variables de entorno por defecto
 ENV NODE_ENV=production
-ENV PORT=3001
+ENV PORT=3000
 
 # Comando para ejecutar la aplicación
 CMD ["npm", "start"]

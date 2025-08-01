@@ -8,9 +8,8 @@ const jwt = require('jsonwebtoken');
 const { sendDiscordNotification } = require('./utils/discord');
 
 const app = express();
+app.use(cors());
 
-// Middleware
-app.use(cors({ origin: ['http://localhost:3000'] }));
 app.use(express.json());
 
 
